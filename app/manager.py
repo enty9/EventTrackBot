@@ -9,6 +9,7 @@ from aiogram.exceptions import TelegramForbiddenError
 
 from .search.engine import EventSearcher
 from .sender import send_event
+from .spheres import DEFAULT_SPHERE, sphere_title
 from .storage import Storage
 
 log = logging.getLogger(__name__)
@@ -31,10 +32,12 @@ class MonitorManager:
         self._max_events = max_events_per_cycle
         self._tasks: dict[int, asyncio.Task] = {}
 
-    async def start(self, user_id: int, city: str) -> None:
+    async def start(
+        self, user_id: int, city: str, sphere: str = DEFAULT_SPHERE
+    ) -> None:
         await self._cancel(user_id)
-        await self._storage.update(user_id, city=city, running=True)
-        self._spawn(user_id, city, delay=0)
+        await self._storage.update(user_id, city=city, sphere=sphere, running=True)
+        self._spawn(user_id, city, sphere, delay=0)
 
     async def stop(self, user_id: int) -> None:
         await self._cancel(user_id)
@@ -53,15 +56,20 @@ class MonitorManager:
         started = 0
         for user_id, record in users:
             if record.running and record.city:
-                self._spawn(user_id, record.city, delay=5 + started * 3)
+                sphere = record.sphere or DEFAULT_SPHERE
+                if not record.sphere:
+                    await self._storage.update(user_id, sphere=sphere)
+                self._spawn(user_id, record.city, sphere, delay=5 + started * 3)
                 started += 1
         if started:
             log.info("Возобновлён мониторинг для %d пользователей", started)
 
-    def _spawn(self, user_id: int, city: str, *, delay: float) -> None:
+    def _spawn(
+        self, user_id: int, city: str, sphere: str, *, delay: float
+    ) -> None:
         task = asyncio.create_task(
-            self._run(user_id, city, delay),
-            name=f"monitor:{user_id}:{city}",
+            self._run(user_id, city, sphere, delay),
+            name=f"monitor:{user_id}:{city}:{sphere}",
         )
         self._tasks[user_id] = task
 
@@ -77,7 +85,9 @@ class MonitorManager:
         except Exception:
             log.exception("Ошибка при остановке мониторинга пользователя %s", user_id)
 
-    async def _run(self, user_id: int, city: str, delay: float) -> None:
+    async def _run(
+        self, user_id: int, city: str, sphere: str, delay: float
+    ) -> None:
         try:
             if delay:
                 await asyncio.sleep(delay)
@@ -86,7 +96,7 @@ class MonitorManager:
                 record = await self._storage.get(user_id)
                 if not record.running:
                     return
-                await self._cycle(user_id, city, first_cycle)
+                await self._cycle(user_id, city, sphere, first_cycle)
                 first_cycle = False
                 await asyncio.sleep(self._interval)
         except asyncio.CancelledError:
@@ -98,9 +108,11 @@ class MonitorManager:
             if self._tasks.get(user_id) is current:
                 self._tasks.pop(user_id, None)
 
-    async def _cycle(self, user_id: int, city: str, first_cycle: bool) -> None:
+    async def _cycle(
+        self, user_id: int, city: str, sphere: str, first_cycle: bool
+    ) -> None:
         try:
-            events = await self._searcher.search(city)
+            events = await self._searcher.search(city, sphere)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -138,7 +150,8 @@ class MonitorManager:
         elif first_cycle:
             await self._safe_message(
                 user_id,
-                f"Пока новых мероприятий в городе <b>{html.escape(city)}</b> не найдено. "
+                f"Пока новых мероприятий в городе <b>{html.escape(city)}</b> "
+                f"по сфере <b>{html.escape(sphere_title(sphere))}</b> не найдено. "
                 "Продолжаю проверять.",
             )
 

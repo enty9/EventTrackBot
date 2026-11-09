@@ -3,6 +3,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from .cities import POPULAR_CITIES
+from .spheres import SPHERES
 
 
 def cities_keyboard() -> InlineKeyboardMarkup:
@@ -26,13 +27,33 @@ def controls_keyboard(running: bool) -> InlineKeyboardMarkup:
         rows = [
             [InlineKeyboardButton(text="⏹ Остановить поиск", callback_data="stop")],
             [InlineKeyboardButton(text="🏙 Сменить город", callback_data="change_city")],
+            [InlineKeyboardButton(text="🎯 Сменить сферу", callback_data="change_sphere")],
         ]
     else:
         rows = [
             [InlineKeyboardButton(text="🔎 Найти мероприятия", callback_data="search")],
             [InlineKeyboardButton(text="🏙 Сменить город", callback_data="change_city")],
+            [InlineKeyboardButton(text="🎯 Сменить сферу", callback_data="change_sphere")],
         ]
     rows.append([InlineKeyboardButton(text="ℹ️ Статус", callback_data="status")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def spheres_keyboard() -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for sphere in SPHERES:
+        row.append(
+            InlineKeyboardButton(
+                text=f"{sphere.emoji} {sphere.title}",
+                callback_data=f"sphere:{sphere.key}",
+            )
+        )
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -17,8 +17,14 @@ from .cities import (
     normalize_city,
 )
 from .config import Config
-from .keyboards import cities_keyboard, confirm_city_keyboard, controls_keyboard
+from .keyboards import (
+    cities_keyboard,
+    confirm_city_keyboard,
+    controls_keyboard,
+    spheres_keyboard,
+)
 from .manager import MonitorManager
+from .spheres import SPHERES_BY_KEY, sphere_title
 from .storage import Storage
 
 log = logging.getLogger(__name__)
@@ -33,7 +39,9 @@ def _esc(value: str | None) -> str:
     return html.escape(value or "", quote=False)
 
 
-def _menu_text(city: str, running: bool, interval_minutes: int) -> str:
+def _menu_text(
+    city: str, sphere: str | None, running: bool, interval_minutes: int
+) -> str:
     if running:
         status = (
             "🔎 <b>Поиск запущен.</b>\n"
@@ -43,9 +51,29 @@ def _menu_text(city: str, running: bool, interval_minutes: int) -> str:
     else:
         status = (
             "Нажми «🔎 Найти мероприятия», и бот начнёт постоянно искать "
-            "события по программированию."
+            "события в выбранной сфере."
         )
-    return f"🏙 Город: <b>{_esc(city)}</b>\n\n{status}"
+    return (
+        f"🏙 Город: <b>{_esc(city)}</b>\n"
+        f"🎯 Сфера: <b>{_esc(sphere_title(sphere))}</b>\n\n{status}"
+    )
+
+
+async def _prompt_sphere(message: Message) -> None:
+    await message.answer(
+        "🎯 <b>Выбери сферу мероприятий</b>\n\n"
+        "От неё зависит, какие события искать: IT, шахматы или аниме.",
+        reply_markup=spheres_keyboard(),
+    )
+
+
+async def _edit_sphere_prompt(callback: CallbackQuery) -> None:
+    await _edit_message(
+        callback,
+        "🎯 <b>Выбери сферу мероприятий</b>\n\n"
+        "От неё зависит, какие события искать: IT, шахматы или аниме.",
+        spheres_keyboard(),
+    )
 
 
 async def _prompt_city(message: Message, state: FSMContext) -> None:
@@ -91,13 +119,17 @@ async def cmd_start(message: Message, state: FSMContext, storage: Storage, confi
         return
     await state.clear()
     record = await storage.get(user.id)
-    if record.city:
+    if not record.city:
+        await _prompt_city(message, state)
+    elif not record.sphere:
+        await _prompt_sphere(message)
+    else:
         await message.answer(
-            _menu_text(record.city, record.running, config.interval_seconds // 60),
+            _menu_text(
+                record.city, record.sphere, record.running, config.interval_seconds // 60
+            ),
             reply_markup=controls_keyboard(record.running),
         )
-    else:
-        await _prompt_city(message, state)
 
 
 @router.message(Command("help"))
@@ -105,14 +137,15 @@ async def cmd_help(message: Message) -> None:
     await message.answer(
         "ℹ️ <b>Как пользоваться</b>\n\n"
         "1. Выбери город России.\n"
-        "2. Нажми «🔎 Найти мероприятия» — бот начнёт постоянно искать "
-        "события по программированию и присылать новые.\n"
-        "3. Нажми «⏹ Остановить поиск», чтобы остановиться. После этого "
-        "можно сменить город и снова запустить поиск.\n\n"
+        "2. Выбери сферу: IT, шахматы или аниме.\n"
+        "3. Нажми «🔎 Найти мероприятия» — бот начнёт постоянно искать "
+        "события в выбранной сфере и присылать новые.\n"
+        "4. Нажми «⏹ Остановить поиск», чтобы остановиться. После этого "
+        "можно сменить город или сферу и снова запустить поиск.\n\n"
         "В карточке есть дата, место, постер, описание, ограничения, "
         "источник и ссылка для регистрации. Если вход платный, будет "
         "показан значок 💵 и цена в рублях.\n\n"
-        "Команды: /start, /city, /stop, /status, /help"
+        "Команды: /start, /city, /sphere, /stop, /status, /help"
     )
 
 
@@ -133,6 +166,22 @@ async def cmd_city(
     await _prompt_city(message, state)
 
 
+@router.message(Command("sphere"))
+async def cmd_sphere(
+    message: Message,
+    storage: Storage,
+    manager: MonitorManager,
+) -> None:
+    user = message.from_user
+    if user is None:
+        return
+    record = await storage.get(user.id)
+    if record.running:
+        await manager.stop(user.id)
+        await message.answer("⏹ Поиск остановлен. Теперь можно выбрать другую сферу.")
+    await _prompt_sphere(message)
+
+
 @router.message(Command("stop"))
 async def cmd_stop(
     message: Message,
@@ -147,7 +196,9 @@ async def cmd_stop(
     record = await storage.get(user.id)
     if record.city:
         await message.answer(
-            _menu_text(record.city, False, config.interval_seconds // 60),
+            _menu_text(
+                record.city, record.sphere, False, config.interval_seconds // 60
+            ),
             reply_markup=controls_keyboard(False),
         )
     else:
@@ -166,8 +217,10 @@ async def cmd_status(
     record = await storage.get(user.id)
     status = "🔎 работает" if record.running else "⏹ остановлен"
     city = record.city or "не выбран"
+    sphere = sphere_title(record.sphere) if record.sphere else "не выбрана"
     await message.answer(
         f"🏙 Город: <b>{_esc(city)}</b>\n"
+        f"🎯 Сфера: <b>{_esc(sphere)}</b>\n"
         f"Статус: {status}\n"
         f"Интервал проверки: {config.interval_seconds // 60} мин."
     )
@@ -197,9 +250,17 @@ async def city_selected(
     await _apply_city(user.id, city, state, storage, manager)
     record = await storage.get(user.id)
     await callback.answer()
+    if not record.sphere:
+        await _edit_sphere_prompt(callback)
+        return
     await _edit_message(
         callback,
-        _menu_text(record.city or city, record.running, config.interval_seconds // 60),
+        _menu_text(
+            record.city or city,
+            record.sphere,
+            record.running,
+            config.interval_seconds // 60,
+        ),
         controls_keyboard(record.running),
     )
 
@@ -236,9 +297,17 @@ async def city_confirm(
     await _apply_city(user.id, city, state, storage, manager)
     record = await storage.get(user.id)
     await callback.answer()
+    if not record.sphere:
+        await _edit_sphere_prompt(callback)
+        return
     await _edit_message(
         callback,
-        _menu_text(record.city or city, record.running, config.interval_seconds // 60),
+        _menu_text(
+            record.city or city,
+            record.sphere,
+            record.running,
+            config.interval_seconds // 60,
+        ),
         controls_keyboard(record.running),
     )
 
@@ -272,15 +341,19 @@ async def start_search(
         if callback.message:
             await _prompt_city(callback.message, state)
         return
+    if not record.sphere:
+        await callback.answer("Сначала выбери сферу", show_alert=True)
+        await _edit_sphere_prompt(callback)
+        return
     if record.running:
         await callback.answer("Поиск уже запущен")
         return
 
-    await manager.start(user.id, record.city)
+    await manager.start(user.id, record.city, record.sphere)
     await callback.answer("Поиск запущен")
     await _edit_message(
         callback,
-        _menu_text(record.city, True, config.interval_seconds // 60)
+        _menu_text(record.city, record.sphere, True, config.interval_seconds // 60)
         + "\n\nПервые результаты пришлю после проверки источников (обычно до минуты).",
         controls_keyboard(True),
     )
@@ -301,7 +374,12 @@ async def stop_search(
     await callback.answer("Поиск остановлен")
     await _edit_message(
         callback,
-        _menu_text(record.city or "не выбран", False, config.interval_seconds // 60),
+        _menu_text(
+            record.city or "не выбран",
+            record.sphere,
+            False,
+            config.interval_seconds // 60,
+        ),
         controls_keyboard(False),
     )
 
@@ -330,6 +408,67 @@ async def change_city(
     )
 
 
+@router.callback_query(F.data == "change_sphere")
+async def change_sphere(
+    callback: CallbackQuery,
+    storage: Storage,
+    manager: MonitorManager,
+) -> None:
+    user = callback.from_user
+    if user is None:
+        return
+    record = await storage.get(user.id)
+    if record.running:
+        await manager.stop(user.id)
+    await callback.answer()
+    await _edit_message(
+        callback,
+        "🎯 <b>Выбери новую сферу мероприятий</b>\n\n"
+        "От неё зависит, какие события искать: IT, шахматы или аниме.",
+        spheres_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("sphere:"))
+async def sphere_selected(
+    callback: CallbackQuery,
+    storage: Storage,
+    manager: MonitorManager,
+    config: Config,
+) -> None:
+    user = callback.from_user
+    if user is None or callback.data is None:
+        return
+    key = callback.data.split(":", 1)[1]
+    if key not in SPHERES_BY_KEY:
+        await callback.answer("Неизвестная сфера", show_alert=True)
+        return
+
+    record = await storage.get(user.id)
+    if record.running and record.sphere != key:
+        await manager.stop(user.id)
+    await storage.update(user.id, sphere=key)
+    record = await storage.get(user.id)
+    await callback.answer()
+
+    if not record.city:
+        await _edit_message(
+            callback,
+            "🏙 <b>Выбери город России</b>\n\n"
+            "Можно нажать на популярный город или ввести свой.",
+            cities_keyboard(),
+        )
+        return
+
+    await _edit_message(
+        callback,
+        _menu_text(
+            record.city, key, record.running, config.interval_seconds // 60
+        ),
+        controls_keyboard(record.running),
+    )
+
+
 @router.callback_query(F.data == "status")
 async def status_callback(callback: CallbackQuery, storage: Storage) -> None:
     user = callback.from_user
@@ -338,7 +477,10 @@ async def status_callback(callback: CallbackQuery, storage: Storage) -> None:
     record = await storage.get(user.id)
     status = "🔎 Работает" if record.running else "⏹ Остановлен"
     city = record.city or "не выбран"
-    await callback.answer(f"{status}\nГород: {city}", show_alert=True)
+    sphere = sphere_title(record.sphere) if record.sphere else "не выбрана"
+    await callback.answer(
+        f"{status}\nГород: {city}\nСфера: {sphere}", show_alert=True
+    )
 
 
 @router.message(CityStates.waiting_city, F.text)
@@ -369,8 +511,16 @@ async def city_text(
     if is_known_city(city):
         await _apply_city(user.id, city, state, storage, manager)
         record = await storage.get(user.id)
+        if not record.sphere:
+            await _prompt_sphere(message)
+            return
         await message.answer(
-            _menu_text(record.city or city, record.running, config.interval_seconds // 60),
+            _menu_text(
+                record.city or city,
+                record.sphere,
+                record.running,
+                config.interval_seconds // 60,
+            ),
             reply_markup=controls_keyboard(record.running),
         )
         return
@@ -391,7 +541,8 @@ async def fallback_text(message: Message, storage: Storage, config: Config) -> N
     record = await storage.get(user.id)
     if record.city:
         await message.answer(
-            "Пользуйся кнопками под сообщением. Чтобы сменить город — /city",
+            "Пользуйся кнопками под сообщением. Чтобы сменить город — /city, "
+            "сферу — /sphere",
             reply_markup=controls_keyboard(record.running),
         )
     else:

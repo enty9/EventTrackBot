@@ -11,6 +11,7 @@ import httpx
 from ..cities import city_variants
 from ..models import Event
 from ..money import normalize_currency
+from ..spheres import DEFAULT_SPHERE, Sphere, get_sphere
 from ..timeutil import MOSCOW, as_utc
 from .bing import search_urls as bing_search
 from .currency import CurrencyConverter
@@ -21,15 +22,6 @@ from .extract import extract_events
 from .yahoo import search_urls as yahoo_search
 
 log = logging.getLogger(__name__)
-
-PROGRAMMING_RE = re.compile(
-    r"программ|разработ|айти|\bIT\b|\bИТ\b|хакатон|hackathon|митап|meetup|"
-    r"developer|devops|python|javascript|typescript|java\b|golang|"
-    r"backend|frontend|fullstack|machine\s*learning|\bML\b|data\s*science|"
-    r"нейросет|искусственн\w*\s+интеллект|робот|информационн\w*\s+технолог|"
-    r"computer\s*science|кодинг|coding|\bкод(?:а|у|ом|е)?\b|воркшоп|workshop|олимпиад",
-    re.IGNORECASE,
-)
 
 MAX_PAGE_BYTES = 4 * 1024 * 1024
 DISCOVERY_TIMEOUT = 35.0
@@ -65,47 +57,48 @@ class EventSearcher:
         self._cache: dict[str, tuple[float, list[Event]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
-    def _queries(self, city: str) -> list[str]:
+    def _queries(self, city: str, sphere: Sphere) -> list[str]:
         year = datetime.now(MOSCOW).year
         return [
-            f"мероприятия программирование {city} {year}",
-            f"IT конференция {city} {year}",
-            f"хакатон {city} {year}",
-            f"митап разработчиков {city} {year}",
-            f"конференция программистов {city}",
-            f"site:timepad.ru {city} программирование",
-            f"site:kudago.com {city} программирование",
-            f"site:meetup.com {city} программирование",
+            template.format(city=city, year=year) for template in sphere.queries
         ]
 
-    async def search(self, city: str) -> list[Event]:
+    async def search(
+        self, city: str, sphere_key: str = DEFAULT_SPHERE
+    ) -> list[Event]:
+        sphere = get_sphere(sphere_key)
         city = city.strip()
+        cache_key = f"{sphere.key}:{city}"
         now = time.monotonic()
-        cached = self._cache.get(city)
+        cached = self._cache.get(cache_key)
         if cached and now - cached[0] < self._cache_ttl:
             return list(cached[1])
 
-        lock = self._locks.setdefault(city, asyncio.Lock())
+        lock = self._locks.setdefault(cache_key, asyncio.Lock())
         async with lock:
             now = time.monotonic()
-            cached = self._cache.get(city)
+            cached = self._cache.get(cache_key)
             if cached and now - cached[0] < self._cache_ttl:
                 return list(cached[1])
 
             try:
-                events = await self._search_uncached(city)
+                events = await self._search_uncached(city, sphere)
             except Exception:
-                log.exception("Ошибка поиска мероприятий в городе %s", city)
+                log.exception(
+                    "Ошибка поиска мероприятий в городе %s (сфера %s)",
+                    city,
+                    sphere.title,
+                )
                 events = []
 
-            self._cache[city] = (time.monotonic(), events)
+            self._cache[cache_key] = (time.monotonic(), events)
             if len(self._cache) > 50:
                 oldest = min(self._cache.items(), key=lambda item: item[1][0])[0]
                 self._cache.pop(oldest, None)
             return list(events)
 
-    async def _search_uncached(self, city: str) -> list[Event]:
-        urls = await self._discover(city)
+    async def _search_uncached(self, city: str, sphere: Sphere) -> list[Event]:
+        urls = await self._discover(city, sphere)
         if not urls:
             log.info("Поиск не вернул ссылок для города %s", city)
             return []
@@ -152,7 +145,7 @@ class EventSearcher:
         events: list[Event] = []
         for _url, page_events in pages:
             for event in page_events:
-                if self._is_relevant(event, city, now):
+                if self._is_relevant(event, city, now, sphere):
                     events.append(event)
 
         await self._enrich_events(events)
@@ -169,19 +162,19 @@ class EventSearcher:
         )
         return events[: self._max_events]
 
-    async def _discover(self, city: str) -> list[str]:
-        direct_task = asyncio.create_task(
-            asyncio.wait_for(discover_direct(self._client, city), DISCOVERY_TIMEOUT)
+    async def _discover(self, city: str, sphere: Sphere) -> list[str]:
+        tasks = []
+        if sphere.direct:
+            tasks.append(
+                asyncio.wait_for(discover_direct(self._client, city), DISCOVERY_TIMEOUT)
+            )
+        tasks.append(
+            asyncio.wait_for(self._search_discover(city, sphere), DISCOVERY_TIMEOUT)
         )
-        search_task = asyncio.create_task(
-            asyncio.wait_for(self._search_discover(city), DISCOVERY_TIMEOUT)
-        )
-        direct_urls, search_urls = await asyncio.gather(
-            direct_task, search_task, return_exceptions=True
-        )
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
         urls: list[str] = []
-        for result in (direct_urls, search_urls):
+        for result in results:
             if isinstance(result, BaseException):
                 log.debug("Источник недоступен: %s", result)
                 continue
@@ -192,7 +185,7 @@ class EventSearcher:
                     return urls
         return urls
 
-    async def _search_discover(self, city: str) -> list[str]:
+    async def _search_discover(self, city: str, sphere: Sphere) -> list[str]:
         semaphore = asyncio.Semaphore(2)
 
         async def run_query(query: str) -> list[str]:
@@ -204,7 +197,7 @@ class EventSearcher:
                     return urls
             return []
 
-        tasks = [run_query(query) for query in self._queries(city)]
+        tasks = [run_query(query) for query in self._queries(city, sphere)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         urls: list[str] = []
@@ -238,7 +231,9 @@ class EventSearcher:
         except (UnicodeDecodeError, LookupError):
             return None
 
-    def _is_relevant(self, event: Event, city: str, now: datetime) -> bool:
+    def _is_relevant(
+        self, event: Event, city: str, now: datetime, sphere: Sphere
+    ) -> bool:
         if _LIST_TITLE_RE.search(event.title):
             return False
 
@@ -253,7 +248,7 @@ class EventSearcher:
             return False
 
         headline = f"{event.title} {event.description} {event.event_type}"
-        if not PROGRAMMING_RE.search(headline):
+        if not sphere.keywords.search(headline):
             return False
 
         return self._city_matches(event, city)

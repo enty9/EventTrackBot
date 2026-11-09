@@ -15,6 +15,7 @@ MAX_SEEN_PER_USER = 2000
 @dataclass(slots=True)
 class UserRecord:
     city: str | None = None
+    sphere: str | None = None
     running: bool = False
     seen: set[str] = field(default_factory=set)
 
@@ -50,6 +51,7 @@ class Storage:
                 seen = []
             record = UserRecord(
                 city=raw_record.get("city") or None,
+                sphere=raw_record.get("sphere") or None,
                 running=bool(raw_record.get("running")),
                 seen={str(url) for url in seen if url},
             )
@@ -97,6 +99,7 @@ class Storage:
             "users": {
                 str(user_id): {
                     "city": record.city,
+                    "sphere": record.sphere,
                     "running": record.running,
                     "seen": sorted(record.seen),
                 }
