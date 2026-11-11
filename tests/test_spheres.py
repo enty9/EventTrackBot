@@ -10,7 +10,7 @@ from app.spheres import DEFAULT_SPHERE, SPHERES_BY_KEY, get_sphere, sphere_title
 
 class SphereTests(unittest.TestCase):
     def test_available_spheres(self) -> None:
-        self.assertEqual(set(SPHERES_BY_KEY), {"it", "chess", "anime"})
+        self.assertEqual(set(SPHERES_BY_KEY), {"all", "it", "chess", "anime"})
 
     def test_default_is_it(self) -> None:
         self.assertEqual(get_sphere(None).key, DEFAULT_SPHERE)
@@ -19,15 +19,26 @@ class SphereTests(unittest.TestCase):
         self.assertIn("Шахматы", sphere_title("chess"))
         self.assertIn("Аниме", sphere_title("anime"))
 
+    def test_title_for_all(self) -> None:
+        self.assertIn("Все мероприятия", sphere_title("all"))
+
     def test_keywords(self) -> None:
         self.assertTrue(get_sphere("chess").keywords.search("Шахматный турнир"))
         self.assertTrue(get_sphere("anime").keywords.search("Косплей-фестиваль"))
         self.assertFalse(get_sphere("anime").keywords.search("Хакатон разработчиков"))
 
+    def test_all_sphere_has_no_keyword_filter(self) -> None:
+        self.assertIsNone(get_sphere("all").keywords)
+
     def test_queries_are_formatted(self) -> None:
         queries = EventSearcher(None)._queries("Казань", get_sphere("chess"))
         self.assertTrue(all("Казань" in query for query in queries))
         self.assertTrue(any("шахмат" in query.lower() for query in queries))
+
+    def test_all_queries_are_formatted(self) -> None:
+        queries = EventSearcher(None)._queries("Казань", get_sphere("all"))
+        self.assertTrue(all("Казань" in query for query in queries))
+        self.assertTrue(any("афиша" in query.lower() for query in queries))
 
 
 class RelevanceTests(unittest.TestCase):
@@ -67,6 +78,12 @@ class RelevanceTests(unittest.TestCase):
         event = self.make_event("Шахматный турнир на кубок города")
         self.assertTrue(
             self.searcher._is_relevant(event, "Казань", self.now, get_sphere("chess"))
+        )
+
+    def test_any_event_passes_for_all(self) -> None:
+        event = self.make_event("Джазовый концерт")
+        self.assertTrue(
+            self.searcher._is_relevant(event, "Казань", self.now, get_sphere("all"))
         )
 
 

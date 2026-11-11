@@ -24,7 +24,7 @@ from .keyboards import (
     spheres_keyboard,
 )
 from .manager import MonitorManager
-from .spheres import SPHERES_BY_KEY, sphere_title
+from .spheres import ALL_SPHERE, SPHERES_BY_KEY, sphere_title
 from .storage import Storage
 
 log = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ def _menu_text(
 async def _prompt_sphere(message: Message) -> None:
     await message.answer(
         "🎯 <b>Выбери сферу мероприятий</b>\n\n"
-        "От неё зависит, какие события искать: IT, шахматы или аниме.",
+        "Можно искать IT, шахматы, аниме или все мероприятия города.",
         reply_markup=spheres_keyboard(),
     )
 
@@ -71,7 +71,7 @@ async def _edit_sphere_prompt(callback: CallbackQuery) -> None:
     await _edit_message(
         callback,
         "🎯 <b>Выбери сферу мероприятий</b>\n\n"
-        "От неё зависит, какие события искать: IT, шахматы или аниме.",
+        "Можно искать IT, шахматы, аниме или все мероприятия города.",
         spheres_keyboard(),
     )
 
@@ -137,15 +137,17 @@ async def cmd_help(message: Message) -> None:
     await message.answer(
         "ℹ️ <b>Как пользоваться</b>\n\n"
         "1. Выбери город России.\n"
-        "2. Выбери сферу: IT, шахматы или аниме.\n"
+        "2. Выбери сферу: IT, шахматы, аниме или «Все мероприятия».\n"
         "3. Нажми «🔎 Найти мероприятия» — бот начнёт постоянно искать "
-        "события в выбранной сфере и присылать новые.\n"
+        "события в выбранной сфере (или все события города) и присылать новые.\n"
         "4. Нажми «⏹ Остановить поиск», чтобы остановиться. После этого "
         "можно сменить город или сферу и снова запустить поиск.\n\n"
+        "Команда /all или кнопка «🎉 Все мероприятия города» сразу запускает "
+        "поиск всех мероприятий в выбранном городе.\n\n"
         "В карточке есть дата, место, постер, описание, ограничения, "
         "источник и ссылка для регистрации. Если вход платный, будет "
         "показан значок 💵 и цена в рублях.\n\n"
-        "Команды: /start, /city, /sphere, /stop, /status, /help"
+        "Команды: /start, /city, /sphere, /all, /stop, /status, /help"
     )
 
 
@@ -180,6 +182,36 @@ async def cmd_sphere(
         await manager.stop(user.id)
         await message.answer("⏹ Поиск остановлен. Теперь можно выбрать другую сферу.")
     await _prompt_sphere(message)
+
+
+@router.message(Command("all"))
+async def cmd_all(
+    message: Message,
+    state: FSMContext,
+    storage: Storage,
+    manager: MonitorManager,
+    config: Config,
+) -> None:
+    user = message.from_user
+    if user is None:
+        return
+    record = await storage.get(user.id)
+    if not record.city:
+        await message.answer("Сначала выбери город, а затем повтори /all.")
+        await _prompt_city(message, state)
+        return
+    await manager.start(user.id, record.city, ALL_SPHERE)
+    record = await storage.get(user.id)
+    await message.answer(
+        _menu_text(
+            record.city or "",
+            ALL_SPHERE,
+            True,
+            config.interval_seconds // 60,
+        )
+        + "\n\nПервые результаты пришлю после проверки источников (обычно до минуты).",
+        reply_markup=controls_keyboard(True),
+    )
 
 
 @router.message(Command("stop"))
@@ -359,6 +391,36 @@ async def start_search(
     )
 
 
+@router.callback_query(F.data == "search_all")
+async def start_search_all(
+    callback: CallbackQuery,
+    state: FSMContext,
+    storage: Storage,
+    manager: MonitorManager,
+    config: Config,
+) -> None:
+    user = callback.from_user
+    if user is None:
+        return
+    record = await storage.get(user.id)
+    if not record.city:
+        await callback.answer("Сначала выбери город", show_alert=True)
+        if callback.message:
+            await _prompt_city(callback.message, state)
+        return
+
+    await manager.start(user.id, record.city, ALL_SPHERE)
+    await callback.answer("Ищу все мероприятия города")
+    await _edit_message(
+        callback,
+        _menu_text(
+            record.city, ALL_SPHERE, True, config.interval_seconds // 60
+        )
+        + "\n\nПервые результаты пришлю после проверки источников (обычно до минуты).",
+        controls_keyboard(True),
+    )
+
+
 @router.callback_query(F.data == "stop")
 async def stop_search(
     callback: CallbackQuery,
@@ -424,7 +486,7 @@ async def change_sphere(
     await _edit_message(
         callback,
         "🎯 <b>Выбери новую сферу мероприятий</b>\n\n"
-        "От неё зависит, какие события искать: IT, шахматы или аниме.",
+        "Можно искать IT, шахматы, аниме или все мероприятия города.",
         spheres_keyboard(),
     )
 

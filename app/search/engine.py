@@ -248,7 +248,7 @@ class EventSearcher:
             return False
 
         headline = f"{event.title} {event.description} {event.event_type}"
-        if not sphere.keywords.search(headline):
+        if sphere.keywords is not None and not sphere.keywords.search(headline):
             return False
 
         return self._city_matches(event, city)

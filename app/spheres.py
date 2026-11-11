@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 DEFAULT_SPHERE = "it"
+ALL_SPHERE = "all"
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,12 +13,29 @@ class Sphere:
     title: str
     emoji: str
     description: str
-    keywords: re.Pattern[str]
     queries: tuple[str, ...]
+    keywords: re.Pattern[str] | None = None
     direct: bool = False
 
 
 SPHERES: tuple[Sphere, ...] = (
+    Sphere(
+        key=ALL_SPHERE,
+        title="Все мероприятия",
+        emoji="🎉",
+        description="любые события города",
+        queries=(
+            "мероприятия {city} {year}",
+            "афиша мероприятий {city} {year}",
+            "события {city} {year}",
+            "куда сходить {city} {year}",
+            "концерты и выставки {city} {year}",
+            "site:timepad.ru {city}",
+            "site:kudago.com {city}",
+            "site:afisha.ru {city}",
+            "site:concert.ru {city}",
+        ),
+    ),
     Sphere(
         key="it",
         title="IT",

@@ -35,6 +35,13 @@ def controls_keyboard(running: bool) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🏙 Сменить город", callback_data="change_city")],
             [InlineKeyboardButton(text="🎯 Сменить сферу", callback_data="change_sphere")],
         ]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🎉 Все мероприятия города", callback_data="search_all"
+            )
+        ]
+    )
     rows.append([InlineKeyboardButton(text="ℹ️ Статус", callback_data="status")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
